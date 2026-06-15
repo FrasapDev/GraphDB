@@ -1,0 +1,119 @@
+# docker-compose.yml
+# Benchmark Neo4j vs PostgreSQL vs Cassandra — Twitch Gamers Network
+#
+# Dimensionamento per laptop con 16 GB di RAM. La somma degli heap massimi
+# (PG shared_buffers + Neo4j heap+pagecache + Cassandra MAX_HEAP) e' tenuta
+# sotto ~9 GB per lasciare margine al SO e al processo Python della pipeline.
+#
+# NOTA ARCHITETTURALE sul numero di nodi Cassandra:
+# la specifica chiedeva 3 nodi. Su 16 GB reali un cluster a 3 nodi e' una
+# finzione: i 3 processi JVM competono per la stessa RAM fisica, quindi NON
+# misura ne' la parallelizzazione ne' la tolleranza ai guasti reali, e rischia
+# OOM durante l'import dei 6.8M di archi. Usiamo 1 nodo e spieghiamo a parole
+# (vedi docs/06_limitazioni.md) cosa cambierebbe a 3 nodi reali su macchine
+# separate: replication factor, token range, hinted handoff, read repair.
+# Un cluster finto a 3 nodi su un host insegna di meno di un nodo onesto.
+
+name: twitch-benchmark
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: tb-postgres
+    environment:
+      POSTGRES_USER: bench
+      POSTGRES_PASSWORD: bench
+      POSTGRES_DB: twitch
+      # Tuning OLAP: poche connessioni, molta memoria per scansione/sort.
+      # shared_buffers ~25% RAM concessa al container; work_mem alto perche'
+      # le metriche fanno aggregazioni e self-join pesanti su pochi client.
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=1GB"
+      - "-c"
+      - "work_mem=256MB"
+      - "-c"
+      - "maintenance_work_mem=512MB"
+      - "-c"
+      - "max_parallel_workers_per_gather=4"
+      - "-c"
+      - "effective_cache_size=3GB"
+      - "-c"
+      - "max_wal_size=4GB"
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks:
+      - benchnet
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bench -d twitch"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  neo4j:
+    image: neo4j:5.26-community   # 5.26 e' LTS: APOC core e GDS combaciano
+    container_name: tb-neo4j
+    environment:
+      NEO4J_AUTH: neo4j/benchpass
+      # Plugin scaricati a runtime dall'immagine ufficiale. GDS Community
+      # NON richiede licenza per gli algoritmi usati qui (degree, PageRank,
+      # betweenness, local clustering, triangle count).
+      NEO4J_PLUGINS: '["apoc","graph-data-science"]'
+      # Heap + pagecache. Il pagecache e' la struttura chiave di Neo4j:
+      # tiene gli store (nodi/relazioni a record di dimensione fissa) in RAM
+      # e abilita l'index-free adjacency a costo O(1) per hop.
+      NEO4J_server_memory_heap_initial__size: "1G"
+      NEO4J_server_memory_heap_max__size: "2G"
+      NEO4J_server_memory_pagecache_size: "2G"
+      NEO4J_dbms_security_procedures_unrestricted: "gds.*,apoc.*"
+      NEO4J_dbms_security_procedures_allowlist: "gds.*,apoc.*"
+    ports:
+      - "7474:7474"   # browser HTTP
+      - "7687:7687"   # bolt
+    volumes:
+      - neo4j_data:/data
+      - ./neo4j-import:/var/lib/neo4j/import   # per neo4j-admin import veloce
+    networks:
+      - benchnet
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  cassandra:
+    image: cassandra:4.1
+    container_name: tb-cassandra
+    environment:
+      CASSANDRA_CLUSTER_NAME: twitch-bench
+      CASSANDRA_DC: dc1
+      CASSANDRA_RACK: rack1
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+      # Heap ridotto: Cassandra di default prende 1/4 della RAM dell'host (4GB
+      # su 16), troppo se gira accanto a PG e Neo4j. Lo fissiamo a 2GB.
+      MAX_HEAP_SIZE: "2G"
+      HEAP_NEWSIZE: "512M"
+    ports:
+      - "9042:9042"
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    networks:
+      - benchnet
+    healthcheck:
+      # cqlsh ritorna 0 solo quando il nodo accetta query CQL
+      test: ["CMD-SHELL", "cqlsh -e 'describe keyspaces' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 40   # Cassandra ci mette 1-2 min al primo avvio
+
+volumes:
+  pg_data:
+  neo4j_data:
+  cassandra_data:
+
+networks:
+  benchnet:
+    driver: bridge

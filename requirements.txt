@@ -1,0 +1,8 @@
+# Driver dei tre database
+psycopg2-binary>=2.9      # PostgreSQL
+neo4j>=5.0                # Neo4j (bolt)
+cassandra-driver>=3.28    # Cassandra (CQL)
+
+# Riferimento / verita' di terreno e download
+networkx>=3.0
+requests>=2.28
