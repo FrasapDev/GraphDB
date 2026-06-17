@@ -1,0 +1,220 @@
+# docker-compose.distributed.yml
+# Estensione "ambito distribuito": Cassandra (AP, consistenza tunabile) vs
+# CockroachDB (CP, consistenza forte via Raft) — 3 nodi ciascuno, su un
+# singolo host.
+#
+# NOTA SUL DIMENSIONAMENTO (laptop 16 GB):
+# questo file NON va eseguito insieme a docker/docker-compose.yml (il
+# benchmark centralizzato Postgres+Neo4j+Cassandra-1-nodo). Fermalo prima:
+#   docker compose -f docker/docker-compose.yml down
+# Budget di questo stack:
+#   - Cassandra x3: MAX_HEAP_SIZE=512M -> ~1-1.3 GB RSS/nodo  => ~3.5 GB
+#   - CockroachDB x3: --cache=256MiB --max-sql-memory=256MiB => ~2 GB
+#   Totale containers ~5.5-6 GB, lascia margine per SO/Docker/Python.
+#
+# PERCHE' 3 NODI VERI QUI (a differenza del Cassandra a 1 nodo del benchmark
+# principale): l'obiettivo NON e' misurare throughput a regime, ma OSSERVARE
+# meccanismi distribuiti (consistency level, quorum, Raft, kill di un nodo).
+# Per questo, 3 nodi piccoli su un host sono didatticamente onesti: il
+# fenomeno (CL=ALL che fallisce con 1 nodo down, Raft che regge con 2/3,
+# retry SERIALIZABLE) e' reale anche se la macchina e' una sola.
+
+name: twitch-distributed
+
+services:
+  # ==========================================================================
+  # CASSANDRA — 3 nodi, RF=3 (vedi db/cassandra_cluster_schema.cql)
+  # ==========================================================================
+  cass-1:
+    image: cassandra:4.1
+    container_name: tbd-cass-1
+    environment:
+      CASSANDRA_CLUSTER_NAME: twitch-distributed
+      CASSANDRA_SEEDS: "cass-1,cass-2"
+      MAX_HEAP_SIZE: "512M"
+      HEAP_NEWSIZE: "128M"
+    ports:
+      - "9042:9042"
+    volumes:
+      - cass1_data:/var/lib/cassandra
+    networks:
+      distnet:
+        ipv4_address: 172.28.1.11
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'describe cluster' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+
+  cass-2:
+    image: cassandra:4.1
+    container_name: tbd-cass-2
+    environment:
+      CASSANDRA_CLUSTER_NAME: twitch-distributed
+      CASSANDRA_SEEDS: "cass-1,cass-2"
+      MAX_HEAP_SIZE: "512M"
+      HEAP_NEWSIZE: "128M"
+    ports:
+      - "9043:9042"
+    volumes:
+      - cass2_data:/var/lib/cassandra
+    networks:
+      distnet:
+        ipv4_address: 172.28.1.12
+    depends_on:
+      cass-1:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'describe cluster' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+
+  cass-3:
+    image: cassandra:4.1
+    container_name: tbd-cass-3
+    environment:
+      CASSANDRA_CLUSTER_NAME: twitch-distributed
+      CASSANDRA_SEEDS: "cass-1,cass-2"
+      MAX_HEAP_SIZE: "512M"
+      HEAP_NEWSIZE: "128M"
+    ports:
+      - "9044:9042"
+    volumes:
+      - cass3_data:/var/lib/cassandra
+    networks:
+      distnet:
+        ipv4_address: 172.28.1.13
+    depends_on:
+      cass-2:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'describe cluster' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+
+  # ==========================================================================
+  # COCKROACHDB — 3 nodi, RF=3 di default per le tabelle utente (Raft)
+  # ==========================================================================
+  crdb-1:
+    image: cockroachdb/cockroach:v23.2.5
+    container_name: tbd-crdb-1
+    command: >
+      start --insecure
+      --join=crdb-1:26257,crdb-2:26257,crdb-3:26257
+      --advertise-addr=crdb-1:26257
+      --http-addr=0.0.0.0:8080
+      --cache=256MiB --max-sql-memory=256MiB
+      --store=/cockroach/cockroach-data
+    ports:
+      - "26257:26257"   # SQL (psycopg2 si collega qui)
+      - "8080:8080"     # Admin UI
+    volumes:
+      - crdb1_data:/cockroach/cockroach-data
+    networks: [distnet]
+    healthcheck:
+      test: ["CMD", "cockroach", "sql", "--insecure", "--host=localhost:26257", "-e", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  crdb-2:
+    image: cockroachdb/cockroach:v23.2.5
+    container_name: tbd-crdb-2
+    command: >
+      start --insecure
+      --join=crdb-1:26257,crdb-2:26257,crdb-3:26257
+      --advertise-addr=crdb-2:26257
+      --http-addr=0.0.0.0:8080
+      --cache=256MiB --max-sql-memory=256MiB
+      --store=/cockroach/cockroach-data
+    ports:
+      - "26258:26257"
+      - "8081:8080"
+    volumes:
+      - crdb2_data:/cockroach/cockroach-data
+    networks: [distnet]
+    healthcheck:
+      test: ["CMD", "cockroach", "sql", "--insecure", "--host=localhost:26257", "-e", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  crdb-3:
+    image: cockroachdb/cockroach:v23.2.5
+    container_name: tbd-crdb-3
+    command: >
+      start --insecure
+      --join=crdb-1:26257,crdb-2:26257,crdb-3:26257
+      --advertise-addr=crdb-3:26257
+      --http-addr=0.0.0.0:8080
+      --cache=256MiB --max-sql-memory=256MiB
+      --store=/cockroach/cockroach-data
+    ports:
+      - "26259:26257"
+      - "8082:8080"
+    volumes:
+      - crdb3_data:/cockroach/cockroach-data
+    networks: [distnet]
+    healthcheck:
+      test: ["CMD", "cockroach", "sql", "--insecure", "--host=localhost:26257", "-e", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  # Job una-tantum: inizializza il cluster CockroachDB (raft) collegando i 3
+  # nodi in un unico cluster logico. Esce dopo aver fatto 'cockroach init'.
+  crdb-init:
+    image: cockroachdb/cockroach:v23.2.5
+    container_name: tbd-crdb-init
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "
+      for i in $(seq 1 30); do
+        cockroach init --insecure --host=crdb-1:26257 && exit 0;
+        echo 'cluster non pronto, riprovo...';
+        sleep 3;
+      done;
+      exit 1
+      "
+    # NB: 'service_started', non 'service_healthy' — l'healthcheck dei nodi
+    # crdb-* (cockroach sql ... SELECT 1) PUO' RIUSCIRE SOLO DOPO che
+    # 'cockroach init' e' stato eseguito ("Client connections will be
+    # accepted after this completes successfully"). Con 'service_healthy'
+    # qui si crea un DEADLOCK: crdb-init aspetta i nodi sani, i nodi non
+    # diventano sani senza crdb-init. Il loop di retry sotto si occupa di
+    # aspettare che l'RPC (porta 26257, disponibile da subito) sia pronto.
+    depends_on:
+      crdb-1:
+        condition: service_started
+      crdb-2:
+        condition: service_started
+      crdb-3:
+        condition: service_started
+    networks: [distnet]
+    restart: "no"
+
+volumes:
+  cass1_data:
+  cass2_data:
+  cass3_data:
+  crdb1_data:
+  crdb2_data:
+  crdb3_data:
+
+networks:
+  distnet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+    # IP statici sui nodi Cassandra (172.28.1.11/.12/.13): servono perche'
+    # il driver Python, dopo la connessione iniziale, scopre i peer via
+    # gossip (system.peers) usando i loro IP INTERNI al bridge Docker. Da
+    # fuori (host) quegli IP non sono raggiungibili sulla porta 9042 reale;
+    # un EndPointFactory custom in pipeline/distributed/cassandra_cluster.py
+    # traduce questi IP fissi nelle porte pubblicate (9042/9043/9044).
+    # CockroachDB non ha questo problema: un client SQL si collega a UN nodo
+    # e quel nodo fa da coordinatore, instradando internamente — nessuna
+    # connessione diretta del client agli altri nodi.

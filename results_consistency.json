@@ -1,0 +1,43 @@
+{
+  "cassandra_cl_latency": {
+    "ONE": {
+      "write_median_ms": 15.52934991195798,
+      "read_median_ms": 15.328799840062857
+    },
+    "QUORUM": {
+      "write_median_ms": 9.20029985718429,
+      "read_median_ms": 15.45224990695715
+    },
+    "ALL": {
+      "write_median_ms": 15.744799980893731,
+      "read_median_ms": 15.820550033822656
+    }
+  },
+  "cockroach_conflict": {
+    "isolation": "default",
+    "elapsed_sec": 2.502986599691212,
+    "retries": 20,
+    "errors": [],
+    "final_balance": 1000,
+    "expected_balance": 1000,
+    "consistent": true
+  },
+  "postgres_read_committed": {
+    "isolation": "READ COMMITTED",
+    "elapsed_sec": 1.1514099002815783,
+    "retries": 0,
+    "errors": [],
+    "final_balance": 1200,
+    "expected_balance": 1000,
+    "consistent": false
+  },
+  "postgres_serializable": {
+    "isolation": "SERIALIZABLE",
+    "elapsed_sec": 2.2658437001518905,
+    "retries": 20,
+    "errors": [],
+    "final_balance": 1000,
+    "expected_balance": 1000,
+    "consistent": true
+  }
+}

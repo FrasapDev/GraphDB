@@ -155,7 +155,7 @@ def main():
     ap.add_argument("--data", default="./data")
     ap.add_argument("--sample", type=int, default=None,
                     help="sottocampiona ai primi N nodi (consigliato su 8-16GB)")
-    ap.add_argument("--only", default="postgres,neo4j,cassandra")
+    ap.add_argument("--only", default="postgres,neo4j")
     ap.add_argument("--reference-only", action="store_true")
     ap.add_argument("--skip-load", action="store_true",
                     help="i DB sono gia' caricati, esegui solo le metriche")
