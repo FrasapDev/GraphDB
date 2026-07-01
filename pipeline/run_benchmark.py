@@ -5,7 +5,7 @@ run_benchmark.py — Pipeline unica del benchmark Twitch Gamers Network.
 Esegue:
   1. download + decompressione dataset (SNAP)
   2. avvio container (lo fai tu con docker compose up; qui solo le connessioni)
-  3. load nei tre DB con misura tempi (metrica 6)
+  3. load nei DB con misura tempi (metrica 6)
   4. esecuzione delle 6 metriche: 1 warmup + 2 misure cronometrate
   5. salvataggio results.json
   6. generazione results.md con tabelle e istogramma testuale
@@ -21,7 +21,7 @@ USO:
   python pipeline/run_benchmark.py --data ./data --reference-only  # solo NetworkX
 
 Dipendenze:
-  pip install psycopg2-binary neo4j cassandra-driver networkx requests
+  pip install psycopg2-binary neo4j networkx requests
 """
 from __future__ import annotations
 import argparse
@@ -62,12 +62,6 @@ def connect_neo4j():
     from neo4j import GraphDatabase
     return GraphDatabase.driver("bolt://localhost:7687",
                                 auth=("neo4j", "benchpass"))
-
-
-def connect_cassandra():
-    from cassandra.cluster import Cluster
-    cluster = Cluster(["127.0.0.1"], port=9042)
-    return cluster.connect()
 
 
 # ---------------------------------------------------------------------------
@@ -177,8 +171,8 @@ def main():
     if args.reference_only:
         _dump(results); return
 
-    from loaders import PostgresLoader, Neo4jLoader, CassandraLoader
-    from metrics import PostgresMetrics, Neo4jMetrics, CassandraMetrics
+    from loaders import PostgresLoader, Neo4jLoader
+    from metrics import PostgresMetrics, Neo4jMetrics
 
     # PostgreSQL
     if "postgres" in targets:
@@ -202,18 +196,6 @@ def main():
             results["metrics"]["neo4j"] = run_db("neo4j", nm, prep=nm.project)
         except Exception as ex:
             print(f"[neo4j] non disponibile: {ex}")
-
-    # Cassandra
-    if "cassandra" in targets:
-        try:
-            sess = connect_cassandra()
-            if not args.skip_load:
-                print("[cassandra] load ...")
-                results["load"]["cassandra"] = CassandraLoader(sess).load(ds, keep)
-            sess.set_keyspace("twitch")
-            results["metrics"]["cassandra"] = run_db("cassandra", CassandraMetrics(sess))
-        except Exception as ex:
-            print(f"[cassandra] non disponibile: {ex}")
 
     _dump(results)
 

@@ -1,18 +1,9 @@
 # docker-compose.yml
-# Benchmark Neo4j vs PostgreSQL vs Cassandra — Twitch Gamers Network
+# Benchmark Neo4j vs PostgreSQL — Twitch Gamers Network
 #
 # Dimensionamento per laptop con 16 GB di RAM. La somma degli heap massimi
-# (PG shared_buffers + Neo4j heap+pagecache + Cassandra MAX_HEAP) e' tenuta
-# sotto ~9 GB per lasciare margine al SO e al processo Python della pipeline.
-#
-# NOTA ARCHITETTURALE sul numero di nodi Cassandra:
-# la specifica chiedeva 3 nodi. Su 16 GB reali un cluster a 3 nodi e' una
-# finzione: i 3 processi JVM competono per la stessa RAM fisica, quindi NON
-# misura ne' la parallelizzazione ne' la tolleranza ai guasti reali, e rischia
-# OOM durante l'import dei 6.8M di archi. Usiamo 1 nodo e spieghiamo a parole
-# (vedi docs/06_limitazioni.md) cosa cambierebbe a 3 nodi reali su macchine
-# separate: replication factor, token range, hinted handoff, read repair.
-# Un cluster finto a 3 nodi su un host insegna di meno di un nodo onesto.
+# (PG shared_buffers + Neo4j heap+pagecache) e' tenuta sotto ~6 GB per
+# lasciare margine al SO e al processo Python della pipeline.
 
 name: twitch-benchmark
 
@@ -68,6 +59,9 @@ services:
       NEO4J_server_memory_heap_initial__size: "1G"
       NEO4J_server_memory_heap_max__size: "2G"
       NEO4J_server_memory_pagecache_size: "2G"
+      # 0 = no separate cap; the heap ceiling (2G above) is the real limit.
+      # Default would be ~70% of heap (~1.4G), which OOMs on bulk loads/GDS.
+      NEO4J_dbms_memory_transaction_total_max: "0"
       NEO4J_dbms_security_procedures_unrestricted: "gds.*,apoc.*"
       NEO4J_dbms_security_procedures_allowlist: "gds.*,apoc.*"
     ports:
@@ -84,35 +78,10 @@ services:
       timeout: 5s
       retries: 30
 
-  cassandra:
-    image: cassandra:4.1
-    container_name: tb-cassandra
-    environment:
-      CASSANDRA_CLUSTER_NAME: twitch-bench
-      CASSANDRA_DC: dc1
-      CASSANDRA_RACK: rack1
-      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
-      # Heap ridotto: Cassandra di default prende 1/4 della RAM dell'host (4GB
-      # su 16), troppo se gira accanto a PG e Neo4j. Lo fissiamo a 2GB.
-      MAX_HEAP_SIZE: "2G"
-      HEAP_NEWSIZE: "512M"
-    ports:
-      - "9042:9042"
-    volumes:
-      - cassandra_data:/var/lib/cassandra
-    networks:
-      - benchnet
-    healthcheck:
-      # cqlsh ritorna 0 solo quando il nodo accetta query CQL
-      test: ["CMD-SHELL", "cqlsh -e 'describe keyspaces' || exit 1"]
-      interval: 15s
-      timeout: 10s
-      retries: 40   # Cassandra ci mette 1-2 min al primo avvio
 
 volumes:
   pg_data:
   neo4j_data:
-  cassandra_data:
 
 networks:
   benchnet:

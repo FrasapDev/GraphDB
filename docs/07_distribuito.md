@@ -225,30 +225,24 @@ I risultati effettivi sono nella sezione 7 di `results_distributed.md` (da
 
 ---
 
-## 7.6 Tabella di confronto a 4 colonne
+## 7.6 Report: Cassandra cluster vs CockroachDB
 
-`pipeline/distributed/report_distributed.py` produce in `results_distributed.md`
-una tabella di confronto **PostgreSQL / Neo4j / Cassandra (cluster, RF=3) /
-CockroachDB**, unendo:
-- `results.json` (benchmark centralizzato — campione grande/dataset intero)
-- `results_distributed.json` (questo benchmark — campione piccolo, 6 container)
+`pipeline/distributed/report_distributed.py` produce `results_distributed.md`
+con un confronto diretto **Cassandra (cluster, RF=3) vs CockroachDB**:
 
-> **Attenzione ai campioni**: i due file derivano da run con `--sample`
-> diversi (il cluster distribuito a 6 container non sostiene il dataset da
-> 168k nodi / 6.8M archi su 16GB di RAM). Il confronto a 4 colonne va quindi
-> letto sui **meccanismi** e sugli **ordini di grandezza relativi** (es. "il
-> grado globale a CL=ALL costa Nx il grado a CL=ONE"), non sui valori assoluti
-> tra colonne con campioni diversi.
+1. Riepilogo architetturale (CAP, consenso, consistenza, modello dati)
+2. Tempi di caricamento
+3. Grado medio (Cassandra a CL=QUORUM vs CockroachDB)
+4. Tempi di esecuzione per metrica (grado, PageRank, assortativita')
+5. Cassandra: query locale vs globale per Consistency Level
+6. CockroachDB: `EXPLAIN ... distribution: local|full`
+7. Demo consistenza (`results_consistency.json`, se presente)
+8. Demo fault tolerance (`results_fault_tolerance.json`, se presente)
 
-Le sezioni del report sono:
-1. Tempi di caricamento
-2. Grado medio (4 colonne)
-3. Tempi di esecuzione per metrica (grado, PageRank, assortativita', clustering)
-4. Cassandra: query locale vs globale per Consistency Level
-5. CockroachDB: `EXPLAIN ... distribution: local|full` come evidenza diretta
-   della differenza locale/globale
-6. Demo consistenza (`results_consistency.json`)
-7. Demo fault tolerance (`results_fault_tolerance.json`)
+I valori numerici delle metriche (grado medio, dev. std, max) sono
+**identici** tra i due sistemi: e' lo stesso dataset, quindi lo stesso grafo.
+La differenza e' nei **tempi**, nei **meccanismi** e nel **comportamento sotto
+guasto** — non nei risultati matematici.
 
 ---
 

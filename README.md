@@ -1,8 +1,8 @@
-# Benchmark: Neo4j vs PostgreSQL vs Cassandra — Twitch Gamers Network
+# Benchmark: Neo4j vs PostgreSQL — Twitch Gamers Network
 
-Confronto delle performance di tre database (grafo, relazionale, wide-column
-distribuito) sul calcolo di 6 metriche di rete, con spiegazione architetturale
-dei risultati. Progetto per l'esame di Architettura dei Dati.
+Confronto delle performance di due database (grafo, relazionale) sul calcolo
+di 6 metriche di rete, con spiegazione architetturale dei risultati. Progetto
+per l'esame di Architettura dei Dati.
 
 ## Struttura
 
@@ -14,12 +14,11 @@ twitch-benchmark/
 ├── db/
 │   ├── postgres_schema.sql        # DDL relazionale + indici giustificati
 │   ├── neo4j_schema.cypher        # vincoli/indici, modello a grafo
-│   ├── cassandra_schema.cql       # keyspace + tabelle denormalizzate (1 nodo)
 │   ├── cassandra_cluster_schema.cql  # keyspace RF=3 per il cluster a 3 nodi
 │   └── cockroachdb_schema.sql     # schema relazionale per il cluster CockroachDB
 ├── pipeline/
 │   ├── data.py                    # download SNAP + normalizzazione
-│   ├── loaders.py                 # load nei 3 DB + misura tempi (metrica 6)
+│   ├── loaders.py                 # load nei DB + misura tempi (metrica 6)
 │   ├── metrics.py                 # le 6 metriche x 3 DB + Big-O + architettura
 │   ├── report.py                  # genera results.md
 │   ├── run_benchmark.py           # orchestratore (warmup + 2 misure)
@@ -51,12 +50,12 @@ twitch-benchmark/
 # 1. dipendenze Python
 pip install -r requirements.txt
 
-# 2. avvia i tre database
+# 2. avvia i database
 docker compose -f docker/docker-compose.yml up -d
 
-# 3. attendi che Cassandra sia pronto (1-2 min al primo avvio)
+# 3. attendi che i DB siano pronti
 docker compose -f docker/docker-compose.yml ps
-#   stato 'healthy' su tutti e tre prima di proseguire
+#   stato 'healthy' su entrambi prima di proseguire
 
 # 4. esegui il benchmark
 #    -- dataset intero (serve RAM e pazienza):
@@ -84,14 +83,9 @@ cat results.json    # dati grezzi
 
 ## Note importanti
 
-- **Cassandra a 1 nodo** (non 3): su un singolo host 3 nodi competono per la
-  stessa RAM e non misurano nulla di reale. Vedi `docs/06_limitazioni.md` per
-  cosa cambierebbe su un cluster vero (replication factor, token ring).
-- **Betweenness su Cassandra**: limitata a 500 nodi (vincolo del progetto),
-  calcolata interamente lato client perche' Cassandra non esegue BFS.
-- **Betweenness esatta su PostgreSQL**: il file calcola le distanze BFS via
-  CTE ricorsiva come *proxy di costo*; la Brandes completa in SQL puro sul
-  grafo intero non e' praticabile, ed e' un risultato architetturale, non un
+- **Betweenness esatta su PostgreSQL**: viene calcolata la distanza BFS media
+  via CTE ricorsiva come *proxy di costo*; la Brandes completa in SQL puro sul
+  grafo intero non e' praticabile — e' un risultato architetturale, non un
   limite dell'implementazione (vedi docs).
 - **Verifica di correttezza**: tutte le metriche sono validate contro
   NetworkX sul campione (grado, clustering, PageRank, betweenness,
@@ -103,7 +97,6 @@ cat results.json    # dati grezzi
 |---|---|---|
 | PostgreSQL | localhost:5432 | bench / bench, db `twitch` |
 | Neo4j | bolt://localhost:7687 | neo4j / benchpass |
-| Cassandra | localhost:9042 | (nessuna auth) |
 
 ## Ambito distribuito: Cassandra (AP) vs CockroachDB (CP)
 

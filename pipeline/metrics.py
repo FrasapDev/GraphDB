@@ -4,9 +4,6 @@ nativo piu' onesto:
 
   Neo4j      -> Graph Data Science (GDS): algoritmi nativi su grafo proiettato
   PostgreSQL -> SQL puro, incluse CTE ricorsive per i percorsi
-  Cassandra  -> CQL per estrarre le partizioni + aggregazione Python lato client
-                (Cassandra non ha join ne' algoritmi di grafo: il calcolo
-                 globale e' SEMPRE client-side)
 
 Ogni funzione e' raccolta dentro una classe per DB. Le classi espongono la
 stessa interfaccia, cosi' il runner le chiama in modo uniforme e cronometra.
@@ -18,9 +15,6 @@ Ogni metodo ha in docstring:
 V = numero nodi (168k), E = numero archi (6.8M), d = grado medio (~81).
 """
 from __future__ import annotations
-import math
-import random
-from collections import defaultdict
 
 
 # ============================================================================
@@ -304,159 +298,6 @@ class PostgresMetrics:
             GROUP BY na.language, nb.language
         """)
         return _newman_from_mixing([(r[0], r[1], r[2]) for r in rows])
-
-
-# ============================================================================
-#  CASSANDRA  — CQL + aggregazione Python lato client
-# ============================================================================
-class CassandraMetrics:
-    """Cassandra non aggrega lato server oltre la singola partizione e non
-    fa join. Ogni metrica GLOBALE = (1) leggi le partizioni necessarie con
-    CQL, (2) aggrega in Python. Questo rende esplicito il costo di rete e di
-    trasferimento: e' il prezzo di un sistema che ottimizza l'accesso a
-    chiave nota a scapito dell'analisi globale."""
-
-    def __init__(self, session):
-        self.session = session
-
-    def _all_adjacency(self):
-        """Estrae l'intera lista di adiacenza scorrendo follows_by_source.
-        E' una FULL TABLE SCAN (token range scan su tutte le partizioni):
-        costosa, ma e' l'unico modo per avere il grafo intero lato client.
-        Ritorna dict {source: [targets]}."""
-        adj = defaultdict(list)
-        rows = self.session.execute(
-            "SELECT source_id, target_id FROM follows_by_source")
-        for r in rows:
-            adj[r.source_id].append(r.target_id)
-        return adj
-
-    # --- 1. GRADO -----------------------------------------------------------
-    def degree(self):
-        """
-        COMPLESSITA': O(P) partizioni lette (= V) + O(E) trasferiti al client.
-        ARCHITETTURA: il grado di un singolo utente noto sarebbe O(1) (una
-          partizione). Ma il grado MEDIO e' globale: serve toccare TUTTE le
-          partizioni (full scan) e contare lato client. Cassandra non sa fare
-          'avg(count per partition)' server-side.
-        """
-        adj = self._all_adjacency()
-        degs = [len(v) for v in adj.values()]
-        mean = sum(degs) / len(degs)
-        var = sum((d - mean) ** 2 for d in degs) / len(degs)
-        return {"avg_deg": mean, "std_deg": math.sqrt(var), "max_deg": max(degs)}
-
-    # --- 2. CLUSTERING ------------------------------------------------------
-    def clustering_global(self, adj=None):
-        """
-        COMPLESSITA': full scan O(E) + O(sum deg^2) lato client per i triangoli.
-        ARCHITETTURA: niente join => il test 'i due vicini di X sono connessi?'
-          si fa con set lookup in Python sulle liste di adiacenza gia' caricate
-          in RAM. Cassandra qui e' solo un fornitore di righe; il grafo lo
-          ricostruisce il client. E' lento e usa molta RAM client.
-        """
-        adj = adj or self._all_adjacency()
-        nbr = {k: set(v) for k, v in adj.items()}
-        triangles = 0
-        triplets = 0
-        for v, ns in nbr.items():
-            ns = list(ns)
-            k = len(ns)
-            triplets += k * (k - 1) // 2
-            for i in range(k):
-                for j in range(i + 1, k):
-                    if ns[j] in nbr.get(ns[i], ()):
-                        triangles += 1
-        # ogni triangolo contato 3 volte (una per vertice)
-        triangles //= 3
-        transitivity = (3 * triangles / triplets) if triplets else 0.0
-        return {"transitivity": transitivity, "triangles": triangles}
-
-    # --- 3. BETWEENNESS -----------------------------------------------------
-    def betweenness(self, sample=500, adj=None):
-        """
-        COMPLESSITA': full scan O(E) per costruire il grafo + Brandes O(s*E)
-          lato client.
-        ARCHITETTURA: Cassandra NON puo' fare BFS server-side. Si scarica
-          tutto e si esegue Brandes in Python. Il DB e' un magazzino, non un
-          motore di calcolo su grafo. Il campione e' ridotto a 500 (come da
-          vincolo) perche' tutto pesa sulla RAM del client.
-        """
-        adj = adj or self._all_adjacency()
-        nbr = {k: list(set(v)) for k, v in adj.items()}
-        nodes = list(nbr.keys())
-        random.seed(42)
-        sources = random.sample(nodes, min(sample, len(nodes)))
-        bc = dict.fromkeys(nbr, 0.0)
-        for s in sources:                       # Brandes (non pesato)
-            S, P, sigma, d = [], defaultdict(list), defaultdict(float), {}
-            sigma[s] = 1.0; d[s] = 0
-            from collections import deque
-            Q = deque([s])
-            while Q:
-                v = Q.popleft(); S.append(v)
-                for w in nbr.get(v, ()):
-                    if w not in d:
-                        d[w] = d[v] + 1; Q.append(w)
-                    if d[w] == d[v] + 1:
-                        sigma[w] += sigma[v]; P[w].append(v)
-            delta = defaultdict(float)
-            while S:
-                w = S.pop()
-                for v in P[w]:
-                    delta[v] += (sigma[v] / sigma[w]) * (1 + delta[w])
-                if w != s:
-                    bc[w] += delta[w]
-        top = sorted(bc.items(), key=lambda x: -x[1])[:10]
-        return [{"id": n, "score": v} for n, v in top]
-
-    # --- 4. PAGERANK --------------------------------------------------------
-    def pagerank(self, iterations=10, damping=0.85, adj=None):
-        """
-        COMPLESSITA': full scan O(E) + O(iter*E) lato client.
-        ARCHITETTURA: identico discorso: l'iterazione di propagazione gira in
-          Python su dizionari. Cassandra non ha alcun concetto di iterazione
-          su grafo. Tutto il valore aggiunto e' nel client.
-        """
-        adj = adj or self._all_adjacency()
-        nodes = list(adj.keys())
-        N = len(nodes)
-        rank = {n: 1.0 / N for n in nodes}
-        outdeg = {n: len(adj[n]) for n in nodes}
-        for _ in range(iterations):
-            new = {n: (1 - damping) / N for n in nodes}
-            for src, tgts in adj.items():
-                if not tgts:
-                    continue
-                share = damping * rank[src] / outdeg[src]
-                for t in tgts:
-                    if t in new:
-                        new[t] += share
-            rank = new
-        top = sorted(rank.items(), key=lambda x: -x[1])[:10]
-        return [{"id": n, "score": v} for n, v in top]
-
-    # --- 5. ASSORTATIVITA' --------------------------------------------------
-    def assortativity(self, adj=None):
-        """
-        COMPLESSITA': full scan archi O(E) + full scan canali O(V) + join
-          lato client.
-        ARCHITETTURA: il 'join' arco-lingua NON esiste in Cassandra. Carichiamo
-          la mappa id->lingua da channels_by_id (full scan) in un dict, poi
-          per ogni arco guardiamo le due lingue in RAM. Il join lo fa il
-          client; il DB non sa correlare due tabelle.
-        """
-        lang = {}
-        for r in self.session.execute("SELECT id, language FROM channels_by_id"):
-            lang[r.id] = r.language
-        adj = adj or self._all_adjacency()
-        mixing = defaultdict(int)
-        for s, tgts in adj.items():
-            ls = lang.get(s)
-            for t in tgts:
-                mixing[(ls, lang.get(t))] += 1
-        triples = [(a, b, c) for (a, b), c in mixing.items()]
-        return _newman_from_mixing(triples)
 
 
 # ============================================================================

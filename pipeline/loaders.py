@@ -3,6 +3,7 @@ loaders.py — Caricamento del dataset in ciascun DB, con misurazione separata
 di (a) tempo di import dati e (b) tempo di costruzione indici (metrica 6).
 
 Ogni loader espone load() -> dict con 'load_sec' e 'index_sec'.
+DB supportati: PostgreSQL, Neo4j.
 """
 from __future__ import annotations
 import time
@@ -73,7 +74,13 @@ class Neo4jLoader:
 
     def load(self, ds: Dataset, keep=None, batch=20000) -> dict:
         with self.driver.session() as s:
-            s.run("MATCH (n) DETACH DELETE n")  # pulizia
+            # Batched delete to avoid exceeding dbms.memory.transaction.total.max.
+            # CALL { } IN TRANSACTIONS runs each sub-batch in its own commit,
+            # so memory stays bounded regardless of graph size.
+            s.run(
+                "MATCH (n) "
+                "CALL { WITH n DETACH DELETE n } IN TRANSACTIONS OF 10000 ROWS"
+            )
             # constraint+indici PRIMA del load: l'indice su id serve a far
             # combaciare gli estremi degli archi in tempo O(log V) durante il
             # MERGE. Li cronometriamo come 'index_sec' anche se creati prima,
@@ -109,69 +116,3 @@ class Neo4jLoader:
                          CREATE (x)-[:FOLLOWS]->(y)""", rows=chunk)
             load_sec = time.perf_counter() - t0
         return {"load_sec": load_sec, "index_sec": index_sec}
-
-
-# ============================================================================
-#  CASSANDRA — prepared statement + scrittura asincrona a batch
-# ============================================================================
-class CassandraLoader:
-    def __init__(self, session, schema_path="db/cassandra_schema.cql"):
-        self.session = session
-        self.schema_path = schema_path
-
-    def load(self, ds: Dataset, keep=None) -> dict:
-        from cassandra.query import BatchStatement
-        from cassandra import ConsistencyLevel
-        from cassandra.concurrent import execute_concurrent_with_args
-        s = self.session
-
-        # --- schema -----------------------------------------------------
-        # Lo split ingenuo su ';' raccoglie pezzi di commento: i commenti //
-        # inline restano attaccati agli statement e dopo lo split un frammento
-        # puo' iniziare con testo di commento (es. "qui ..."), che Cassandra
-        # tenta di eseguire come CQL -> syntax error.
-        # Soluzione: rimuovere ogni commento // (fino a fine riga) PRIMA di
-        # splittare su ';'.
-        with open(self.schema_path) as f:
-            raw = f.read()
-
-        cleaned_lines = []
-        for line in raw.splitlines():
-            idx = line.find("//")
-            if idx != -1:
-                line = line[:idx]
-            cleaned_lines.append(line)
-        cleaned = "\n".join(cleaned_lines)
-
-        for stmt in cleaned.split(";"):
-            stmt = stmt.strip()
-            if stmt:
-                s.execute(stmt)
-
-        s.set_keyspace("twitch")
-
-        # --- prepared statements ---------------------------------------
-        ins_ch = s.prepare("INSERT INTO channels_by_id "
-                           "(id,views,mature,life_time,dead_account,language,affiliate) "
-                           "VALUES (?,?,?,?,?,?,?)")
-        ins_lang = s.prepare("INSERT INTO channels_by_language (language,id) VALUES (?,?)")
-        ins_fol = s.prepare("INSERT INTO follows_by_source (source_id,target_id) VALUES (?,?)")
-
-        # Cassandra NON ha indici/analyze post-load: l'unica struttura e' la
-        # SSTable ordinata per partizione, costruita durante la scrittura.
-        # Quindi index_sec ~ 0 (la "indicizzazione" e' implicita nel modello).
-        t0 = time.perf_counter()
-        # canali
-        rows = [(n["id"], n["views"], n["mature"], n["life_time"],
-                 n["dead_account"], n["language"], n["affiliate"])
-                for n in iter_nodes(ds, keep)]
-        execute_concurrent_with_args(s, ins_ch, rows, concurrency=100)
-        execute_concurrent_with_args(
-            s, ins_lang, [(n[5], n[0]) for n in rows], concurrency=100)
-        # archi DUPLICATI nelle due partizioni
-        fol = []
-        for a, b in iter_edges(ds, keep):
-            fol.append((a, b)); fol.append((b, a))
-        execute_concurrent_with_args(s, ins_fol, fol, concurrency=200)
-        load_sec = time.perf_counter() - t0
-        return {"load_sec": load_sec, "index_sec": 0.0}

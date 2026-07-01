@@ -24,7 +24,7 @@ def _ascii_hist(degree_result, width=40):
 def build_report(results, path="results.md"):
     metrics = results.get("metrics", {})
     load = results.get("load", {})
-    dbs = [d for d in ("postgres", "neo4j", "cassandra") if d in metrics]
+    dbs = [d for d in ("postgres", "neo4j") if d in metrics]
     sample = results.get("meta", {}).get("sample")
 
     lines = []
