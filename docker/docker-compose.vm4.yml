@@ -1,0 +1,50 @@
+# docker-compose.vm4.yml — VM4 (10.0.1.8): Cassandra node 3 + CockroachDB node 3
+
+name: twitch-node-3
+
+services:
+  cassandra:
+    image: cassandra:4.1
+    container_name: tbd-cass-3
+    network_mode: host
+    environment:
+      CASSANDRA_CLUSTER_NAME: twitch-distributed
+      CASSANDRA_SEEDS: "10.0.1.6,10.0.1.5"
+      CASSANDRA_LISTEN_ADDRESS: "10.0.1.8"
+      CASSANDRA_BROADCAST_ADDRESS: "10.0.1.8"
+      CASSANDRA_RPC_ADDRESS: "0.0.0.0"
+      CASSANDRA_BROADCAST_RPC_ADDRESS: "10.0.1.8"
+      MAX_HEAP_SIZE: "4G"
+      HEAP_NEWSIZE: "512M"
+    volumes:
+      - cass3_data:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh 10.0.1.8 9042 -e 'describe cluster' || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 40
+
+  cockroach:
+    image: cockroachdb/cockroach:v23.2.5
+    container_name: tbd-crdb-3
+    network_mode: host
+    command: >
+      start --insecure
+      --join=10.0.1.6:26257,10.0.1.5:26257,10.0.1.8:26257
+      --advertise-addr=10.0.1.8:26257
+      --listen-addr=0.0.0.0:26257
+      --http-addr=0.0.0.0:8080
+      --cache=2GiB
+      --max-sql-memory=2GiB
+      --store=/cockroach/cockroach-data
+    volumes:
+      - crdb3_data:/cockroach/cockroach-data
+    healthcheck:
+      test: ["CMD", "cockroach", "sql", "--insecure", "--host=10.0.1.8:26257", "-e", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  cass3_data:
+  crdb3_data:

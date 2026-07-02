@@ -31,15 +31,27 @@ from metrics import _newman_from_mixing  # noqa: E402
 # CONNESSIONE
 # ============================================================================
 # A differenza di Cassandra, qui NON serve un EndPointFactory: un client SQL
-# si collega a UN nodo (porta pubblicata 26257/26258/26259) e quel nodo
-# coordina internamente con gli altri 2 via RPC sulla rete Docker. Nessuna
-# connessione diretta del client agli altri nodi.
+# si collega a UN nodo e quel nodo coordina internamente con gli altri 2 via
+# Raft. Nessuna connessione diretta del client agli altri nodi.
+#
+# Single-host (docker-compose.distributed.yml):
+#   i tre nodi espongono porte diverse sullo stesso localhost (26257/58/59).
+# Multi-VM (CRDB_HOST impostato):
+#   tutti e tre i nodi espongono la stessa porta 26257 su IP diversi;
+#   ci colleghiamo al nodo 1 — CockroachDB instrada internamente le query.
 NODE_PORTS = {1: 26257, 2: 26258, 3: 26259}
 
 
 def connect_cockroach(node: int = 1):
     import psycopg2
-    return psycopg2.connect(host="localhost", port=NODE_PORTS[node],
+    crdb_host = os.environ.get("CRDB_HOST", "")
+    if crdb_host:
+        # Multi-VM: nodo 1 su IP reale, porta standard
+        host, port = crdb_host, 26257
+    else:
+        # Single-host: nodi su localhost con porte diverse
+        host, port = "localhost", NODE_PORTS[node]
+    return psycopg2.connect(host=host, port=port,
                              dbname="defaultdb", user="root",
                              sslmode="disable")
 

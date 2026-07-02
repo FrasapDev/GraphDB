@@ -18,15 +18,124 @@ dati, stesse query per pagerank/clustering/assortativity — qui aggiungiamo
 solo le due varianti locale/globale del grado con CL parametrico).
 """
 from __future__ import annotations
+import math
 import os
+import random
 import sys
 import time
+from collections import defaultdict
 
-# pipeline/ contiene data.py e metrics.py: li rendiamo importabili anche
-# quando questo script e' lanciato da pipeline/distributed/.
+# pipeline/ contiene data.py: lo rendiamo importabile anche quando questo
+# script e' lanciato da pipeline/distributed/.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from data import iter_nodes, iter_edges  # noqa: E402
-from metrics import CassandraMetrics  # noqa: E402
+
+
+# ============================================================================
+# CASSANDRA METRICS — spostato da pipeline/metrics.py (rimosso dal benchmark
+# centralizzato) per continuare a servire il benchmark distribuito.
+# ============================================================================
+class CassandraMetrics:
+    """Full-scan + aggregazione Python lato client. Usata come base da
+    CassandraClusterMetrics per pagerank/assortativity (operazioni globali
+    che non dipendono dal CL e funzionano identiche su 1 nodo o su 3)."""
+
+    def __init__(self, session):
+        self.session = session
+
+    def _all_adjacency(self):
+        adj = defaultdict(list)
+        rows = self.session.execute(
+            "SELECT source_id, target_id FROM follows_by_source")
+        for r in rows:
+            adj[r.source_id].append(r.target_id)
+        return adj
+
+    def degree(self):
+        adj = self._all_adjacency()
+        degs = [len(v) for v in adj.values()]
+        mean = sum(degs) / len(degs)
+        var = sum((d - mean) ** 2 for d in degs) / len(degs)
+        return {"avg_deg": mean, "std_deg": math.sqrt(var), "max_deg": max(degs)}
+
+    def clustering_global(self, adj=None):
+        adj = adj or self._all_adjacency()
+        nbr = {k: set(v) for k, v in adj.items()}
+        triangles = 0
+        triplets = 0
+        for _, ns in nbr.items():
+            ns = list(ns)
+            k = len(ns)
+            triplets += k * (k - 1) // 2
+            for i in range(k):
+                for j in range(i + 1, k):
+                    if ns[j] in nbr.get(ns[i], ()):
+                        triangles += 1
+        triangles //= 3
+        transitivity = (3 * triangles / triplets) if triplets else 0.0
+        return {"transitivity": transitivity, "triangles": triangles}
+
+    def betweenness(self, sample=500, adj=None):
+        adj = adj or self._all_adjacency()
+        nbr = {k: list(set(v)) for k, v in adj.items()}
+        nodes = list(nbr.keys())
+        random.seed(42)
+        sources = random.sample(nodes, min(sample, len(nodes)))
+        bc = dict.fromkeys(nbr, 0.0)
+        from collections import deque
+        for s in sources:
+            S, P, sigma, d = [], defaultdict(list), defaultdict(float), {}
+            sigma[s] = 1.0; d[s] = 0
+            Q = deque([s])
+            while Q:
+                v = Q.popleft(); S.append(v)
+                for w in nbr.get(v, ()):
+                    if w not in d:
+                        d[w] = d[v] + 1; Q.append(w)
+                    if d[w] == d[v] + 1:
+                        sigma[w] += sigma[v]; P[w].append(v)
+            delta = defaultdict(float)
+            while S:
+                w = S.pop()
+                for v in P[w]:
+                    delta[v] += (sigma[v] / sigma[w]) * (1 + delta[w])
+                if w != s:
+                    bc[w] += delta[w]
+        top = sorted(bc.items(), key=lambda x: -x[1])[:10]
+        return [{"id": n, "score": v} for n, v in top]
+
+    def pagerank(self, iterations=10, damping=0.85, adj=None):
+        adj = adj or self._all_adjacency()
+        nodes = list(adj.keys())
+        N = len(nodes)
+        rank = {n: 1.0 / N for n in nodes}
+        outdeg = {n: len(adj[n]) for n in nodes}
+        for _ in range(iterations):
+            new = {n: (1 - damping) / N for n in nodes}
+            for src, tgts in adj.items():
+                if not tgts:
+                    continue
+                share = damping * rank[src] / outdeg[src]
+                for t in tgts:
+                    if t in new:
+                        new[t] += share
+            rank = new
+        top = sorted(rank.items(), key=lambda x: -x[1])[:10]
+        return [{"id": n, "score": v} for n, v in top]
+
+    def assortativity(self, adj=None):
+        lang = {}
+        for r in self.session.execute("SELECT id, language FROM channels_by_id"):
+            lang[r.id] = r.language
+        adj = adj or self._all_adjacency()
+        mixing = defaultdict(int)
+        for s, tgts in adj.items():
+            ls = lang.get(s)
+            for t in tgts:
+                mixing[(ls, lang.get(t))] += 1
+        from metrics import _newman_from_mixing
+        triples = [(a, b, c) for (a, b), c in mixing.items()]
+        return _newman_from_mixing(triples)
 
 
 # ============================================================================
@@ -72,11 +181,26 @@ class DockerEndPointFactory(EndPointFactory):
 
 
 def connect_cluster(contact_point="127.0.0.1", port=9042):
-    """Connessione al cluster a 3 nodi dall'host. Il contact_point iniziale
-    e' sempre cass-1 (porta 9042); l'EndPointFactory si occupa di cass-2/3."""
+    """Connessione al cluster Cassandra.
+
+    Single-host (docker-compose.distributed.yml su un solo host):
+      CASS_CONTACT_POINTS non impostato → usa 127.0.0.1 + DockerEndPointFactory
+      che traduce gli IP del bridge Docker (172.28.1.x) in porte host.
+
+    Multi-VM (ogni nodo su una VM separata, IP reali raggiungibili):
+      export CASS_CONTACT_POINTS=10.0.1.6,10.0.1.5,10.0.1.8
+      → connessione diretta agli IP reali, nessuna traduzione necessaria.
+    """
     from cassandra.cluster import Cluster
-    cluster = Cluster([contact_point], port=port,
-                       endpoint_factory=DockerEndPointFactory())
+    env_seeds = os.environ.get("CASS_CONTACT_POINTS", "")
+    if env_seeds:
+        # Multi-VM: gli IP reali del VNet sono direttamente raggiungibili
+        contact_points = [h.strip() for h in env_seeds.split(",") if h.strip()]
+        cluster = Cluster(contact_points, port=port)
+    else:
+        # Single-host: traduzione IP bridge Docker → porte host
+        cluster = Cluster([contact_point], port=port,
+                           endpoint_factory=DockerEndPointFactory())
     return cluster.connect()
 
 
