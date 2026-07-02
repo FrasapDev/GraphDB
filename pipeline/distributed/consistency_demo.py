@@ -184,10 +184,12 @@ def conflict_demo(conn_factory, isolation=None, n_ops=20, conflict_window=0.05,
 # Connettori
 # ============================================================================
 def connect_postgres():
-    """Connessione al PostgreSQL del benchmark centralizzato
-    (docker/docker-compose.yml, gia' avviato separatamente)."""
+    """Connessione al PostgreSQL del benchmark centralizzato.
+    In modalità multi-VM imposta POSTGRES_HOST con l'IP della VM che ospita
+    Postgres (es. Worker1 10.0.1.4). Se non impostato, usa localhost."""
     import psycopg2
-    return psycopg2.connect(host="localhost", port=5432, dbname="twitch",
+    host = os.environ.get("POSTGRES_HOST", "localhost")
+    return psycopg2.connect(host=host, port=5432, dbname="twitch",
                              user="bench", password="bench")
 
 

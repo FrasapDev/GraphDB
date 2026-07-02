@@ -38,14 +38,56 @@ from cassandra_cluster import connect_cluster  # noqa: E402
 from cockroach import connect_cockroach  # noqa: E402
 
 
-def docker_stop(name):
-    print(f"  $ docker stop {name}")
-    subprocess.run(["docker", "stop", name], check=True, capture_output=True)
+# ============================================================================
+# Mappa container → VM che lo ospita (multi-VM mode)
+#
+# Imposta questa variabile su VM1 prima di lanciare lo script:
+#   export CONTAINER_HOST_MAP=\
+#     tbd-cass-1:10.0.1.6,tbd-cass-2:10.0.1.5,tbd-cass-3:10.0.1.8,\
+#     tbd-crdb-1:10.0.1.6,tbd-crdb-2:10.0.1.5,tbd-crdb-3:10.0.1.8
+#
+# Se non è impostata, docker stop/start vengono eseguiti localmente
+# (modalità single-host, docker-compose.distributed.yml su un solo host).
+# ============================================================================
+def _parse_host_map() -> dict[str, str]:
+    raw = os.environ.get("CONTAINER_HOST_MAP", "")
+    if not raw:
+        return {}
+    result = {}
+    for entry in raw.split(","):
+        name, _, ip = entry.strip().partition(":")
+        if name and ip:
+            result[name.strip()] = ip.strip()
+    return result
 
 
-def docker_start(name):
-    print(f"  $ docker start {name}")
-    subprocess.run(["docker", "start", name], check=True, capture_output=True)
+_HOST_MAP = _parse_host_map()
+_SSH_USER = os.environ.get("SSH_USER", "Saponaraadmin")
+
+
+def _ssh_docker(action: str, container: str, ip: str):
+    cmd = ["ssh", "-o", "StrictHostKeyChecking=no",
+           f"{_SSH_USER}@{ip}", "docker", action, container]
+    print(f"  $ ssh {_SSH_USER}@{ip} docker {action} {container}")
+    subprocess.run(cmd, check=True, capture_output=True)
+
+
+def docker_stop(name: str):
+    ip = _HOST_MAP.get(name)
+    if ip:
+        _ssh_docker("stop", name, ip)
+    else:
+        print(f"  $ docker stop {name}")
+        subprocess.run(["docker", "stop", name], check=True, capture_output=True)
+
+
+def docker_start(name: str):
+    ip = _HOST_MAP.get(name)
+    if ip:
+        _ssh_docker("start", name, ip)
+    else:
+        print(f"  $ docker start {name}")
+        subprocess.run(["docker", "start", name], check=True, capture_output=True)
 
 
 # ============================================================================

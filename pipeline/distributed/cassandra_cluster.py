@@ -194,14 +194,20 @@ def connect_cluster(contact_point="127.0.0.1", port=9042):
     from cassandra.cluster import Cluster
     env_seeds = os.environ.get("CASS_CONTACT_POINTS", "")
     if env_seeds:
-        # Multi-VM: gli IP reali del VNet sono direttamente raggiungibili
+        # Multi-VM: gli IP reali del VNet sono direttamente raggiungibili.
+        # Timeout alzato a 30s: su rete reale le scritture RF=3 con CL=QUORUM
+        # richiedono l'ACK di 2 nodi e possono essere piu' lente del default (10s).
         contact_points = [h.strip() for h in env_seeds.split(",") if h.strip()]
-        cluster = Cluster(contact_points, port=port)
+        cluster = Cluster(contact_points, port=port,
+                          connect_timeout=30)
+        session = cluster.connect()
+        session.default_timeout = 30
     else:
         # Single-host: traduzione IP bridge Docker → porte host
         cluster = Cluster([contact_point], port=port,
                            endpoint_factory=DockerEndPointFactory())
-    return cluster.connect()
+        session = cluster.connect()
+    return session
 
 
 # ============================================================================
@@ -258,14 +264,17 @@ class CassandraClusterLoader:
         rows = [(n["id"], n["views"], n["mature"], n["life_time"],
                  n["dead_account"], n["language"], n["affiliate"])
                 for n in iter_nodes(ds, keep)]
-        execute_concurrent_with_args(s, ins_ch, rows, concurrency=50)
-        execute_concurrent_with_args(s, ins_lang, [(n[5], n[0]) for n in rows], concurrency=50)
+        # Concorrenza ridotta rispetto al benchmark a 1 nodo: su un cluster
+        # reale via rete ogni write CL=QUORUM aspetta l'ACK di 2 nodi fisici,
+        # mandare troppe request in parallelo satura la coda del coordinatore.
+        execute_concurrent_with_args(s, ins_ch, rows, concurrency=20)
+        execute_concurrent_with_args(s, ins_lang, [(n[5], n[0]) for n in rows], concurrency=20)
 
         fol = []
         for a, b in iter_edges(ds, keep):
             fol.append((a, b))
             fol.append((b, a))
-        execute_concurrent_with_args(s, ins_fol, fol, concurrency=100)
+        execute_concurrent_with_args(s, ins_fol, fol, concurrency=50)
         load_sec = time.perf_counter() - t0
 
         return {
