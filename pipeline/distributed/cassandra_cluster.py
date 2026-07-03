@@ -201,7 +201,9 @@ def connect_cluster(contact_point="127.0.0.1", port=9042):
         cluster = Cluster(contact_points, port=port,
                           connect_timeout=30)
         session = cluster.connect()
-        session.default_timeout = 30
+        # 120s: il dataset completo (13.6M archi, CL=QUORUM) richiede l'ACK
+        # di 2 VM reali per ogni write — su rete Azure 30s non basta.
+        session.default_timeout = 120
     else:
         # Single-host: traduzione IP bridge Docker → porte host
         cluster = Cluster([contact_point], port=port,
@@ -233,7 +235,14 @@ class CassandraClusterLoader:
         from cassandra import ConsistencyLevel
         from cassandra.concurrent import execute_concurrent_with_args
         s = self.session
-        write_cl = write_cl if write_cl is not None else ConsistencyLevel.QUORUM
+        if write_cl is None:
+            # CASS_LOAD_CL=ONE conviene per il dataset completo (168k/13.6M):
+            # CL=ONE non aspetta l'ACK delle 2 repliche remote, dimezza i
+            # tempi di load. Le metriche (consistency_demo) usano QUORUM/ALL
+            # indipendentemente da questa variabile.
+            env_cl = os.environ.get("CASS_LOAD_CL", "").upper()
+            write_cl = {"ONE": ConsistencyLevel.ONE,
+                        "ALL": ConsistencyLevel.ALL}.get(env_cl, ConsistencyLevel.QUORUM)
 
         # --- schema: stesso parsing "rimuovi // fino a fine riga" usato dal
         # loader centralizzato (pipeline/loaders.py), necessario perche' i
@@ -267,14 +276,18 @@ class CassandraClusterLoader:
         # Concorrenza ridotta rispetto al benchmark a 1 nodo: su un cluster
         # reale via rete ogni write CL=QUORUM aspetta l'ACK di 2 nodi fisici,
         # mandare troppe request in parallelo satura la coda del coordinatore.
-        execute_concurrent_with_args(s, ins_ch, rows, concurrency=20)
-        execute_concurrent_with_args(s, ins_lang, [(n[5], n[0]) for n in rows], concurrency=20)
+        # Concorrenza conservativa per dataset completo su VM reali:
+        # con 13.6M archi e CL=QUORUM, concorrenze alte saturano la coda
+        # del coordinatore e causano timeout. Con CL=ONE la concorrenza
+        # puo' essere alzata, ma lasciamo valori sicuri per entrambi i casi.
+        execute_concurrent_with_args(s, ins_ch, rows, concurrency=10)
+        execute_concurrent_with_args(s, ins_lang, [(n[5], n[0]) for n in rows], concurrency=10)
 
         fol = []
         for a, b in iter_edges(ds, keep):
             fol.append((a, b))
             fol.append((b, a))
-        execute_concurrent_with_args(s, ins_fol, fol, concurrency=50)
+        execute_concurrent_with_args(s, ins_fol, fol, concurrency=20)
         load_sec = time.perf_counter() - t0
 
         return {

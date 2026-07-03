@@ -147,9 +147,8 @@ def run_cockroach(ds, keep, args, results):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default="./data")
-    ap.add_argument("--sample", type=int, default=5000,
-                    help="campione di nodi (default 5000: cluster a 6 container "
-                         "piccoli, NON e' pensato per il dataset intero)")
+    ap.add_argument("--sample", type=int, default=0,
+                    help="campione di nodi (default all: cluster a 6 container ")
     ap.add_argument("--only", default="cassandra,cockroach")
     ap.add_argument("--skip-load", action="store_true",
                     help="i DB sono gia' caricati, esegui solo le metriche")
