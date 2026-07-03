@@ -45,13 +45,16 @@ from cockroach import connect_cockroach, CockroachLoader, CockroachMetrics  # no
 # CASSANDRA CLUSTER
 # ============================================================================
 def run_cassandra(ds, keep, args, results):
-    from cassandra import ConsistencyLevel
+    from cassandra import ConsistencyLevel  # usato per degree_local/global sotto
 
     sess = connect_cluster()
     if not args.skip_load:
-        print("[cassandra-cluster] load (write CL=QUORUM) ...")
+        # write_cl=None -> CassandraClusterLoader legge CASS_LOAD_CL dall'ambiente
+        # (default QUORUM; usa ONE per caricare il dataset completo piu' velocemente)
+        env_cl = os.environ.get("CASS_LOAD_CL", "QUORUM").upper()
+        print(f"[cassandra-cluster] load (write CL={env_cl}) ...")
         results["load"]["cassandra_cluster"] = CassandraClusterLoader(sess).load(
-            ds, keep, write_cl=ConsistencyLevel.QUORUM)
+            ds, keep, write_cl=None)
     sess.set_keyspace("twitch_dist")
     cm = CassandraClusterMetrics(sess)
 
