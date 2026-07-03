@@ -283,11 +283,20 @@ class CassandraClusterLoader:
         execute_concurrent_with_args(s, ins_ch, rows, concurrency=10)
         execute_concurrent_with_args(s, ins_lang, [(n[5], n[0]) for n in rows], concurrency=10)
 
-        fol = []
+        # Batch da 10k: evita di tenere in RAM tutti i 13.6M archi in una volta
+        # (OOM killer su VM con 16GB). Stesso pattern di CockroachLoader.load().
+        rows_edges = 0
+        buf = []
         for a, b in iter_edges(ds, keep):
-            fol.append((a, b))
-            fol.append((b, a))
-        execute_concurrent_with_args(s, ins_fol, fol, concurrency=20)
+            buf.append((a, b))
+            buf.append((b, a))
+            if len(buf) >= 10000:
+                execute_concurrent_with_args(s, ins_fol, buf, concurrency=20)
+                rows_edges += len(buf)
+                buf = []
+        if buf:
+            execute_concurrent_with_args(s, ins_fol, buf, concurrency=20)
+            rows_edges += len(buf)
         load_sec = time.perf_counter() - t0
 
         return {
@@ -295,7 +304,7 @@ class CassandraClusterLoader:
             "index_sec": 0.0,
             "write_consistency": ConsistencyLevel.value_to_name[write_cl],
             "rows_nodes": len(rows),
-            "rows_edges": len(fol),
+            "rows_edges": rows_edges,
         }
 
 
