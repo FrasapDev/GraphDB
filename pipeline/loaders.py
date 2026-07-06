@@ -74,9 +74,6 @@ class Neo4jLoader:
 
     def load(self, ds: Dataset, keep=None, batch=20000) -> dict:
         with self.driver.session() as s:
-            # Batched delete to avoid exceeding dbms.memory.transaction.total.max.
-            # CALL { } IN TRANSACTIONS runs each sub-batch in its own commit,
-            # so memory stays bounded regardless of graph size.
             s.run(
                 "MATCH (n) "
                 "CALL { WITH n DETACH DELETE n } IN TRANSACTIONS OF 10000 ROWS"

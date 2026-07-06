@@ -1,8 +1,25 @@
-# Benchmark: Neo4j vs PostgreSQL — Twitch Gamers Network
+# Modelli a confronto: relazionale, a grafo e distribuito su un caso reale
 
-Confronto delle performance di due database (grafo, relazionale) sul calcolo
-di 6 metriche di rete, con spiegazione architetturale dei risultati. Progetto
-per l'esame di Architettura dei Dati.
+Progetto per l'esame di **Architettura dei Dati**. Analizza la rete sociale
+di Twitch (168 k nodi, 6.8 M archi, dataset SNAP) confrontando come sistemi
+con architetture radicalmente diverse rispondono allo stesso insieme di query
+di analisi di grafi.
+
+Il lavoro si divide in due parti complementari:
+
+**Parte centralizzata** — PostgreSQL (relazionale) vs Neo4j (grafo nativo).
+Stesse 6 metriche di rete (grado, clustering, betweenness, PageRank,
+assortativita', caricamento), misurate con warmup e 2 run su un singolo host
+Docker. L'obiettivo e' capire *perche'* le strutture dati e i piani di query
+dei due motori producono tempi e complessita' diversi sulle stesse operazioni.
+
+**Parte distribuita** — Cassandra (AP, RF=3) vs CockroachDB (CP, RF=3, Raft).
+Stesso grafo su cluster a **3 nodi reali** (macchine Azure distinte, IP privati
+su VNet). Oltre alle metriche di rete si dimostrano sperimentalmente le
+garanzie del teorema CAP: Cassandra permette di scegliere il livello di
+consistenza (ONE/QUORUM/ALL) per ogni query e rimane disponibile anche con
+nodi down; CockroachDB garantisce sempre SERIALIZABLE via Raft ma va in
+timeout quando i nodi vivi non raggiungono il quorum 2/3.
 
 ## Struttura
 
@@ -98,38 +115,62 @@ cat results.json    # dati grezzi
 | PostgreSQL | localhost:5432 | bench / bench, db `twitch` |
 | Neo4j | bolt://localhost:7687 | neo4j / benchpass |
 
-## Ambito distribuito: Cassandra (AP) vs CockroachDB (CP)
+## Parte distribuita: Cassandra (AP) vs CockroachDB (CP)
 
-Un secondo benchmark, separato, confronta due sistemi distribuiti con
-logiche **opposte** (consistenza tunabile vs consistenza forte via Raft) su
-cluster a **3 nodi reali** ciascuno, sempre su Docker Compose. Spiegazione
-completa, modello dati e interpretazione dei risultati in
+Cluster a 3 nodi per sistema, testato su **5 VM Azure** (VNet 10.0.1.0/24).
+Spiegazione completa, modello dati e interpretazione in
 [`docs/07_distribuito.md`](docs/07_distribuito.md).
 
+### Topologia VM
+
+| VM | IP privato | Ruolo | Container |
+|---|---|---|---|
+| VM1 | manager | pipeline Python + SSH orchestration | — |
+| VM2 | 10.0.1.6 | seed Cassandra + CockroachDB node 1 | `tbd-cass-1`, `tbd-crdb-1` |
+| VM3 | 10.0.1.5 | Cassandra node 2 + CockroachDB node 2 | `tbd-cass-2`, `tbd-crdb-2` |
+| VM4 | 10.0.1.8 | Cassandra node 3 + CockroachDB node 3 | `tbd-cass-3`, `tbd-crdb-3` |
+| Worker1 | 10.0.1.4 | PostgreSQL + Neo4j (benchmark centralizzato) | `tb-postgres`, `tb-neo4j` |
+
+### Avvio cluster (una tantum)
+
 ```bash
-# 0. ferma il benchmark centralizzato (stessa RAM da 16GB)
-docker compose -f docker/docker-compose.yml down
+# VM2, VM3, VM4 — ciascuna con il proprio compose file:
+docker compose -f docker/docker-compose.vm2.yml up -d   # su VM2
+docker compose -f docker/docker-compose.vm3.yml up -d   # su VM3
+docker compose -f docker/docker-compose.vm4.yml up -d   # su VM4
 
-# 1. avvia il cluster distribuito (3 nodi Cassandra RF=3 + 3 nodi CockroachDB RF=3)
-docker compose -f docker/docker-compose.distributed.yml up -d
-docker compose -f docker/docker-compose.distributed.yml ps   # attendi 'healthy'
+# Verifica gossip Cassandra (attendi tutti UN = Up Normal):
+docker exec tbd-cass-1 nodetool status
 
-# 2. benchmark: load + metriche + tabella di confronto a 4 colonne
-python pipeline/distributed/run_distributed_benchmark.py --data ./data --sample 5000
+# Inizializza CockroachDB UNA SOLA VOLTA da VM2:
+docker exec tbd-crdb-1 cockroach init --insecure --host=10.0.1.6:26257
+```
 
-# 3. demo consistenza (CL Cassandra; conflitti CockroachDB vs PostgreSQL)
-docker compose -f docker/docker-compose.yml up -d postgres
-python pipeline/distributed/consistency_demo.py
+### Esecuzione da VM1
 
-# 4. demo fault tolerance (kill di un nodo via docker stop/start)
-python pipeline/distributed/fault_tolerance_demo.py
+```bash
+# Variabili d'ambiente per multi-VM (aggiungile a run_distributed.sh):
+export CASS_CONTACT_POINTS=10.0.1.6,10.0.1.5,10.0.1.8
+export CRDB_HOST=10.0.1.6
+export CASS_LOAD_CL=ONE          # piu' veloce per il dataset completo
+export POSTGRES_HOST=10.0.1.4    # per la consistency demo
 
-# 5. rigenera il report con tutte le sezioni
-python pipeline/distributed/run_distributed_benchmark.py --data ./data --sample 5000 --skip-load
+# Benchmark principale (dataset completo):
+./run_distributed.sh --sample 0
 
-# 6. risultati
+# Demo consistenza (CL Cassandra; conflitti CockroachDB vs PostgreSQL):
+python3 pipeline/distributed/consistency_demo.py
+
+# Demo fault tolerance (kill SSH remoto dei container):
+export CONTAINER_HOST_MAP=tbd-cass-1:10.0.1.6,tbd-cass-2:10.0.1.5,tbd-cass-3:10.0.1.8,tbd-crdb-1:10.0.1.6,tbd-crdb-2:10.0.1.5,tbd-crdb-3:10.0.1.8
+python3 pipeline/distributed/fault_tolerance_demo.py
+
+# Report unico con §benchmark + §consistenza + §fault tolerance:
+python3 -c "
+import json
+from pipeline.distributed.report_distributed import build_report
+with open('results_distributed.json') as f:
+    build_report(json.load(f))
+"
 cat results_distributed.md
-
-# 7. al termine
-docker compose -f docker/docker-compose.distributed.yml down
 ```
