@@ -1,7 +1,7 @@
 # docker-compose.yml
 # Benchmark Neo4j vs PostgreSQL — Twitch Gamers Network
 #
-# Dimensionamento per laptop con 16 GB di RAM. La somma degli heap massimi
+# Dimensionamento per il mio laptop con 16 GB di RAM. La somma degli heap massimi
 # (PG shared_buffers + Neo4j heap+pagecache) e' tenuta sotto ~6 GB per
 # lasciare margine al SO e al processo Python della pipeline.
 

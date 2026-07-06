@@ -106,20 +106,6 @@ def _reset_accounts(conn, balance=1000):
 
 def conflict_demo(conn_factory, isolation=None, n_ops=20, conflict_window=0.05,
                    initial_balance=1000):
-    """Due thread fanno read-modify-write su accounts.id=1 con delta
-    opposti (+10 / -10), n_ops volte ciascuno.
-
-    conn_factory: callable -> nuova connessione (psycopg2).
-    isolation: None (lascia il default del DB) oppure una stringa per
-      `SET TRANSACTION ISOLATION LEVEL <isolation>` (es. "READ COMMITTED",
-      "SERIALIZABLE"). Su CockroachDB qualunque valore viene mappato a
-      SERIALIZABLE (vedi docstring del modulo).
-    conflict_window: sleep tra SELECT e UPDATE, per allargare la finestra
-      di conflitto e rendere la race riproducibile su una macchina sola.
-
-    Ritorna: {isolation, elapsed_sec, retries, final_balance,
-              expected_balance, consistent}
-    """
     setup = conn_factory()
     _reset_accounts(setup, initial_balance)
     setup.close()

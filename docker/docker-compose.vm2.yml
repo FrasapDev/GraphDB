@@ -1,11 +1,4 @@
 # docker-compose.vm2.yml — VM2 (10.0.1.6): Cassandra node 1 + CockroachDB node 1
-# Cassandra seed node e primo nodo CockroachDB del cluster distribuito.
-#
-# Avvio:
-#   docker compose -f docker-compose.vm2.yml up -d
-#
-# Dopo aver avviato anche vm3 e vm4, inizializza CockroachDB DA QUESTO NODO:
-#   docker exec tbd-crdb-1 cockroach init --insecure --host=10.0.1.6:26257
 
 name: twitch-node-1
 
@@ -16,12 +9,9 @@ services:
     network_mode: host
     environment:
       CASSANDRA_CLUSTER_NAME: twitch-distributed
-      # I due seed node: questo (vm2) e vm3. vm4 li scopre via gossip.
       CASSANDRA_SEEDS: "10.0.1.6,10.0.1.5"
-      # Bind dell'inter-node communication (gossip) all'IP privato di questa VM.
       CASSANDRA_LISTEN_ADDRESS: "10.0.1.6"
       CASSANDRA_BROADCAST_ADDRESS: "10.0.1.6"
-      # CQL: in ascolto su tutte le interfacce, ma gossip annuncia l'IP privato.
       CASSANDRA_RPC_ADDRESS: "0.0.0.0"
       CASSANDRA_BROADCAST_RPC_ADDRESS: "10.0.1.6"
       MAX_HEAP_SIZE: "4G"

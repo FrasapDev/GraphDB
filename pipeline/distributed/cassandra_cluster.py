@@ -141,18 +141,6 @@ class CassandraMetrics:
 # ============================================================================
 # CONNESSIONE — gossip + traduzione IP per l'accesso dall'host
 # ============================================================================
-# COME FUNZIONA LA SCOPERTA DEI NODI (gossip):
-# il driver si connette al "contact point" (cass-1, porta host 9042), legge
-# system.local/system.peers e scopre gli IP INTERNI degli altri nodi
-# (172.28.1.12, .13 sul bridge "distnet"). Da QUESTI IP il driver apre poi
-# connessioni dirette per il connection pooling e il routing delle query
-# verso il nodo "owner" della partizione (token-aware routing).
-#
-# PROBLEMA: dall'host (fuori dal bridge Docker) 172.28.1.12:9042 non e'
-# raggiungibile — solo 127.0.0.1:9043 lo e' (porta pubblicata di cass-2).
-# SOLUZIONE: un EndPointFactory custom intercetta la creazione degli
-# endpoint per i peer scoperti e li traduce IP-fisso -> 127.0.0.1:porta-host,
-# usando la mappa statica definita in docker-compose.distributed.yml.
 try:
     from cassandra.connection import DefaultEndPoint, EndPointFactory
 except ImportError:  # pragma: no cover - import facoltativo se cassandra-driver assente
@@ -195,14 +183,10 @@ def connect_cluster(contact_point="127.0.0.1", port=9042):
     env_seeds = os.environ.get("CASS_CONTACT_POINTS", "")
     if env_seeds:
         # Multi-VM: gli IP reali del VNet sono direttamente raggiungibili.
-        # Timeout alzato a 30s: su rete reale le scritture RF=3 con CL=QUORUM
-        # richiedono l'ACK di 2 nodi e possono essere piu' lente del default (10s).
         contact_points = [h.strip() for h in env_seeds.split(",") if h.strip()]
         cluster = Cluster(contact_points, port=port,
                           connect_timeout=30)
         session = cluster.connect()
-        # 120s: il dataset completo (13.6M archi, CL=QUORUM) richiede l'ACK
-        # di 2 VM reali per ogni write — su rete Azure 30s non basta.
         session.default_timeout = 120
     else:
         # Single-host: traduzione IP bridge Docker → porte host
@@ -243,10 +227,7 @@ class CassandraClusterLoader:
             env_cl = os.environ.get("CASS_LOAD_CL", "").upper()
             write_cl = {"ONE": ConsistencyLevel.ONE,
                         "ALL": ConsistencyLevel.ALL}.get(env_cl, ConsistencyLevel.QUORUM)
-
-        # --- schema: stesso parsing "rimuovi // fino a fine riga" usato dal
-        # loader centralizzato (pipeline/loaders.py), necessario perche' i
-        # commenti // restano attaccati agli statement dopo lo split su ';'.
+            
         with open(self.schema_path) as f:
             raw = f.read()
         cleaned_lines = []
@@ -273,13 +254,6 @@ class CassandraClusterLoader:
         rows = [(n["id"], n["views"], n["mature"], n["life_time"],
                  n["dead_account"], n["language"], n["affiliate"])
                 for n in iter_nodes(ds, keep)]
-        # Concorrenza ridotta rispetto al benchmark a 1 nodo: su un cluster
-        # reale via rete ogni write CL=QUORUM aspetta l'ACK di 2 nodi fisici,
-        # mandare troppe request in parallelo satura la coda del coordinatore.
-        # Concorrenza conservativa per dataset completo su VM reali:
-        # con 13.6M archi e CL=QUORUM, concorrenze alte saturano la coda
-        # del coordinatore e causano timeout. Con CL=ONE la concorrenza
-        # puo' essere alzata, ma lasciamo valori sicuri per entrambi i casi.
         execute_concurrent_with_args(s, ins_ch, rows, concurrency=10)
         execute_concurrent_with_args(s, ins_lang, [(n[5], n[0]) for n in rows], concurrency=10)
 

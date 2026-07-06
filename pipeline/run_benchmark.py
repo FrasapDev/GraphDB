@@ -19,9 +19,6 @@ USO:
   python pipeline/run_benchmark.py --data ./data --sample 20000   # sottocampione
   python pipeline/run_benchmark.py --data ./data --only postgres,neo4j
   python pipeline/run_benchmark.py --data ./data --reference-only  # solo NetworkX
-
-Dipendenze:
-  pip install psycopg2-binary neo4j networkx requests
 """
 from __future__ import annotations
 import argparse

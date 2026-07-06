@@ -12,10 +12,6 @@ sono riusabili quasi identiche. Quello che cambia e' SOTTO al livello SQL:
     range coinvolti (il client non lo vede, ma lo paga in latenza);
   - EXPLAIN riporta un campo 'distribution: local|full' che dice se il
     planner ha eseguito la query su un solo nodo o l'ha distribuita.
-
-A differenza di PostgreSQL, NON usiamo stddev_pop() nelle query (supporto
-variabile tra versioni): calcoliamo la deviazione standard da
-avg(d^2) - avg(d)^2, identico matematicamente, portabile su entrambi i DB.
 """
 from __future__ import annotations
 import os
@@ -30,15 +26,6 @@ from metrics import _newman_from_mixing  # noqa: E402
 # ============================================================================
 # CONNESSIONE
 # ============================================================================
-# A differenza di Cassandra, qui NON serve un EndPointFactory: un client SQL
-# si collega a UN nodo e quel nodo coordina internamente con gli altri 2 via
-# Raft. Nessuna connessione diretta del client agli altri nodi.
-#
-# Single-host (docker-compose.distributed.yml):
-#   i tre nodi espongono porte diverse sullo stesso localhost (26257/58/59).
-# Multi-VM (CRDB_HOST impostato):
-#   tutti e tre i nodi espongono la stessa porta 26257 su IP diversi;
-#   ci colleghiamo al nodo 1 — CockroachDB instrada internamente le query.
 NODE_PORTS = {1: 26257, 2: 26258, 3: 26259}
 
 

@@ -3,21 +3,15 @@
 # CockroachDB (CP, consistenza forte via Raft) — 3 nodi ciascuno, su un
 # singolo host.
 #
-# NOTA SUL DIMENSIONAMENTO (laptop 16 GB):
+# NOTA SUL DIMENSIONAMENTO:
+# (essendo il mio laptop 16 GB di RAM ho trovato questo compromesso)
 # questo file NON va eseguito insieme a docker/docker-compose.yml (il
-# benchmark centralizzato Postgres+Neo4j+Cassandra-1-nodo). Fermalo prima:
+# benchmark centralizzato Postgres+Neo4j). Fermalo prima:
 #   docker compose -f docker/docker-compose.yml down
 # Budget di questo stack:
 #   - Cassandra x3: MAX_HEAP_SIZE=512M -> ~1-1.3 GB RSS/nodo  => ~3.5 GB
 #   - CockroachDB x3: --cache=256MiB --max-sql-memory=256MiB => ~2 GB
 #   Totale containers ~5.5-6 GB, lascia margine per SO/Docker/Python.
-#
-# PERCHE' 3 NODI VERI QUI (a differenza del Cassandra a 1 nodo del benchmark
-# principale): l'obiettivo NON e' misurare throughput a regime, ma OSSERVARE
-# meccanismi distribuiti (consistency level, quorum, Raft, kill di un nodo).
-# Per questo, 3 nodi piccoli su un host sono didatticamente onesti: il
-# fenomeno (CL=ALL che fallisce con 1 nodo down, Raft che regge con 2/3,
-# retry SERIALIZABLE) e' reale anche se la macchina e' una sola.
 
 name: twitch-distributed
 
@@ -108,8 +102,8 @@ services:
       --cache=256MiB --max-sql-memory=256MiB
       --store=/cockroach/cockroach-data
     ports:
-      - "26257:26257"   # SQL (psycopg2 si collega qui)
-      - "8080:8080"     # Admin UI
+      - "26257:26257"
+      - "8080:8080"
     volumes:
       - crdb1_data:/cockroach/cockroach-data
     networks: [distnet]
@@ -178,13 +172,6 @@ services:
       done;
       exit 1
       "
-    # NB: 'service_started', non 'service_healthy' — l'healthcheck dei nodi
-    # crdb-* (cockroach sql ... SELECT 1) PUO' RIUSCIRE SOLO DOPO che
-    # 'cockroach init' e' stato eseguito ("Client connections will be
-    # accepted after this completes successfully"). Con 'service_healthy'
-    # qui si crea un DEADLOCK: crdb-init aspetta i nodi sani, i nodi non
-    # diventano sani senza crdb-init. Il loop di retry sotto si occupa di
-    # aspettare che l'RPC (porta 26257, disponibile da subito) sia pronto.
     depends_on:
       crdb-1:
         condition: service_started

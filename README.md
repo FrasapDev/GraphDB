@@ -42,7 +42,7 @@ twitch-benchmark/
 
 - Docker + Docker Compose
 - Python 3.10+
-- ~16 GB RAM (con 8 GB usare `--sample 20000`)
+- ~16 GB RAM (con 8 GB consiglio di usare `--sample 20000`)
 
 ## Esecuzione (copia-incolla)
 
